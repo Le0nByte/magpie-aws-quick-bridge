@@ -7,6 +7,7 @@ import { browserSignIn } from "./plugin/login.mjs"
 import * as messages from "./plugin/messages.mjs"
 import * as oauth from "./plugin/oauth.mjs"
 import * as qbs from "./plugin/qbs.mjs"
+import * as usageCache from "./plugin/usage-cache.mjs"
 import { accountModels, durationMs, models, settings } from "./plugin/settings.mjs"
 import * as threads from "./plugin/threads.mjs"
 import * as toolbridge from "./plugin/toolbridge.mjs"
@@ -18,6 +19,10 @@ const ID = "aws-quick"
 const BASE = "https://aws-quick.invalid/v1"
 const KEEP_SESSIONS = "keep_sessions"
 const REFRESH_LEAD_MS = 10 * 60_000
+// 额度的读法：magpie 等钩子有上限，读得慢就回上次的数字（见 plugin/usage-cache.mjs）
+const USAGE_TTL_MS = 60_000
+const USAGE_BUDGET_MS = 2_500
+const MODELS_BUDGET_MS = 4_000
 // magpie's id for the conversation a request belongs to (chat.headers)
 const CONVERSATION = "x-aws-quick-conversation"
 
@@ -90,7 +95,7 @@ const server = async (input, options) => {
         const listed = provider?.models ?? {}
         if (auth?.type !== "oauth" || !auth.access) return listed
         try {
-          return accountModels(listed, await qbs.settings(auth))
+          return accountModels(listed, await qbs.settings(auth, { signal: AbortSignal.timeout(MODELS_BUDGET_MS) }))
         } catch {
           return listed
         }
@@ -136,10 +141,22 @@ const server = async (input, options) => {
       async usage(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "oauth" || !auth.access) return { error: "not signed in", windows: [], signIn: "kept" }
+        const key = usageCache.keyOf(auth)
+        const hit = usageCache.get(key)
+        // 一分钟内读过的：直接给，不再打网络
+        if (hit && Date.now() - hit.at < USAGE_TTL_MS) return { ...hit.value, signIn: "kept" }
         try {
-          return { ...(await qbs.usage(auth)), signIn: "kept" }
+          // 预算 2.5s：profile/usage 正常 < 1.5s；慢的时候宁可回旧数字，
+          // 也不要让 magpie 等到 context deadline 把账号卡片打成“无法获取额度”
+          const value = await qbs.usage(auth, { signal: AbortSignal.timeout(USAGE_BUDGET_MS) })
+          usageCache.set(key, value)
+          return { ...value, signIn: "kept" }
         } catch (e) {
-          return { error: String(e?.message ?? e), windows: [], signIn: "kept" }
+          const message = String(e?.message ?? e)
+          // 上游明确拒绝（401/403）是「要重新登录」，不能让缓存把拒绝盖住
+          const refused = Number(e?.status) === 401 || Number(e?.status) === 403
+          if (hit && !refused) return { ...hit.value, signIn: "kept", staleAt: new Date(hit.at).toISOString() }
+          return { error: message, windows: [], signIn: "kept" }
         }
       },
       // magpie's hook: renews the account's tokens before they expire

@@ -21,6 +21,9 @@
 
 > 非官方项目，和 Amazon / AWS 没有关系。请只用你自己的、或者得到授权的账号，并遵守 Amazon Quick 的服务条款。
 
+> **这是 [Le0nByte](https://github.com/Le0nByte) 的二改 fork**（上游 [DaBinBinah/magpie-AWS-Quick-bridge](https://github.com/DaBinBinah/magpie-AWS-Quick-bridge)，GPL-3.0）。
+> 只改额度读取与模型列表的等待行为，聊天、登录、网关逻辑与上游一致。改动见下方「本 fork 的改动」。
+
 ## 用在 Magpie 里
 
 ```sh
@@ -96,6 +99,26 @@ Key 用 `npx magpie-aws-quick-bridge status` 看。
 - Amazon Quick 每轮会带上它自己的一大段系统提示词，所以 token 数看起来很大；额度按它的 credits 算。
 
 更多细节（全部选项、远程登录、工作方式、测试、已知限制）在 [docs/DEVELOPMENT.md](https://github.com/DaBinBinah/magpie-AWS-Quick-bridge/blob/main/docs/DEVELOPMENT.md)。
+
+## 本 fork 的改动
+
+**1. 额度（auth.usage）不会因为一次读得慢就变成「暂时无法获取最新额度」**
+
+Magpie 读额度时等插件宿主有上限，而上游 `profile/usage` 偶尔要 1.5s 以上（代理抖动、账号刚用完一轮）。
+上游实现是「一直等到 15s 或抛错」，一旦被 magpie 等超时，账号卡片就直接变成错误文案。现在：
+
+- 1 分钟内重复读，直接命中本地缓存（实测 ≈1ms，不打网络）；
+- 真正请求限 **2.5s**（正常 <1.5s）；
+- 超时/网络失败但有旧数字时，返回旧数字并附 `staleAt`（哪一次读的），**不再返回 `error`**；
+- 上游明确拒绝（401/403）仍然如实返回 `error`，缓存不会把「要重新登录」盖住；
+- 缓存按 `租户|账号|access token 指纹` 分开，换账号或换 token 不会串数字；
+- 落盘 `~/.aws-quick-bridge/usage-cache.json`（0600，只有额度数字和 SHA-256 前 12 位指纹，没有 token）。
+
+**2. 模型列表（provider.models）不再被上游拖住**
+
+`get_settings` 那次 RPC 加了 4s 预算，超时就用静态模型表，`/v1/models` 不会跟着一起卡。
+
+版本：`0.3.7`。
 
 ## 找我
 
