@@ -28,9 +28,14 @@ export function mapModel(model, fallback) {
 export function thinkingEffort(body, fallback) {
   const asked = String(body?.reasoning_effort ?? body?.reasoning?.effort ?? "").trim().toLowerCase()
   if (!asked) return fallback
+  // 实验用：AWS_QUICK_EFFORT_PASSTHROUGH=1 时把值原样发给上游，用来看上游认不认 xhigh/max
+  if (process.env.AWS_QUICK_EFFORT_PASSTHROUGH === "1") return asked
   if (asked === "none" || asked === "off") return "off"
   if (asked === "minimal" || asked === "low") return "low"
   if (asked === "medium") return "medium"
+  // 实测（2026-11）：上游认 off/low/medium/high/max；max 的思考量约为 high 的 2.4 倍。
+  // xhigh 上游不认（静默按 off 处理），这里仍降级到 high，别发一个上游理解不了的值。
+  if (asked === "max") return "max"
   return "high"
 }
 

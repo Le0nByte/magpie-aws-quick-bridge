@@ -28,7 +28,7 @@ export function settings(options = {}) {
     workingSessionId: text(options.working_session_id),
     timezone: text(options.timezone, "UTC"),
     locale: text(options.locale, "en-US"),
-    thinkingEffort: ["off", "low", "medium", "high"].includes(effort) ? effort : "",
+    thinkingEffort: ["off", "low", "medium", "high", "max"].includes(effort) ? effort : "",
     keepSessions: options.keep_sessions === true,
     webSearch: options.web_search === true,
     // false: every request starts a new thread and sends the whole conversation
@@ -57,7 +57,7 @@ export const model = (id) => ({
   tool_call: true,
   reasoning: true,
   attachment: true,
-  variants: { low: {}, medium: {}, high: {} },
+  variants: { low: {}, medium: {}, high: {}, max: {} },
   modalities: { input: ["text", "image"], output: ["text"] },
 })
 
