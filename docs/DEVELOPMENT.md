@@ -17,6 +17,8 @@ magpie plugin options magpie-AWS-Quick-bridge '{"thinking_effort": "medium", "ti
 | 选项 | 默认 | 说明 |
 |---|---|---|
 | `thinking_effort` | 空 | 请求没有指定推理档位时使用：`off`、`low`、`medium`、`high`、`max`（`max` 为实测生效档，思考量约 `high` 的 2.4 倍；`xhigh` 上游不支持） |
+
+浏览器登录走独立进程（`plugin/signin-helper.mjs`），完成后的账号记录放在 `~/.aws-quick-bridge/signin/record-*.json`（0600，15 分钟有效，取走即删）；宿主被回收不影响登录。
 | `default_model` | `smart` | 收到未知模型名时使用的 agent mode |
 | `timezone` / `locale` | `UTC` / `en-US` | 发给上游的时区与语言 |
 | `request_timeout` | `5m` | 单次上游请求超时（`30s`、`5m`、`1h`，或秒数） |

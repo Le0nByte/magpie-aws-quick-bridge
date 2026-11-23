@@ -4,6 +4,7 @@
 
 import { MODES, chatCompletions, compose, errorResponse, failureResponse, mapModel, prepare, thinkingEffort, usageBody } from "./plugin/chat.mjs"
 import { browserSignIn } from "./plugin/login.mjs"
+import * as signin from "./plugin/signin.mjs"
 import * as messages from "./plugin/messages.mjs"
 import * as oauth from "./plugin/oauth.mjs"
 import * as qbs from "./plugin/qbs.mjs"
@@ -133,7 +134,47 @@ const server = async (input, options) => {
           label: "Amazon Quick (browser sign-in)",
           labels: { zh: "Amazon Quick（浏览器登录）", "zh-TW": "Amazon Quick（瀏覽器登入）" },
           prompts: [ACCOUNT_TYPE, REGION],
-          authorize: (inputs, ctx) => browserSignIn(inputs, cfg(), ctx),
+          // 浏览器登录放到独立进程里跑（plugin/signin-helper.mjs）：magpie 的插件宿主
+          // 会被回收，回环回调服务器寄生在宿主里就会让浏览器回来时 ERR_CONNECTION_REFUSED。
+          // helper 完成后把账号记录写在磁盘上，宿主死了也不丢；下次点登录直接取用。
+          authorize: async (inputs, ctx) => {
+            const c = cfg()
+            // 指向自定义端点（测试的 mock、自建网关）时留在宿主内跑：这些端点只在
+            // 本进程里，交给子进程反而够不着
+            const customEndpoints = Boolean(options?.oidc_base || options?.discovery_url || options?.data_plane_url)
+            if (customEndpoints || process.env.AWS_QUICK_SIGNIN_INPROCESS === "1") return browserSignIn(inputs, c, ctx)
+            const finished = signin.takeFinished()
+            if (finished?.type === "success") return { ...finished.record, type: "success" }
+            const provider = oauth.normalizedProvider(inputs?.provider ?? c.provider)
+            const started = await signin.startDetached({
+              provider,
+              stage: oauth.normalizedStage(c.stage),
+              region: String(inputs?.region ?? "").trim() || c.region,
+              appVersion: c.appVersion,
+              port: c.callbackPort,
+              timeoutMs: c.loginTimeoutMs,
+              log: (line) => console.error(line),
+            })
+            if (started.error) {
+              // 拉不起子进程时退回宿主内登录（老行为，宿主不被回收就能成）
+              console.error(`[signin] detached failed (${started.error}); signing in inside the host`)
+              return browserSignIn(inputs, c, ctx)
+            }
+            return {
+              url: started.url,
+              instructions:
+                "在浏览器完成 Amazon Quick 登录。这个地址只对本次登录有效：别刷新、别开第二个标签。" +
+                "登录期间可以关掉 magpie 面板；结果会保存下来，下次点登录直接生效。",
+              method: "auto",
+              callback: async () => {
+                const r = await started.wait()
+                if (r.type !== "success") return { type: "failed", error: r.error }
+                // 账号记录自己带 type:"oauth"，必须放在后面覆盖，否则宿主会认为
+                // 「这个登录没给可保存的东西」/ 拿它当 failed
+                return { ...r.record, type: "success" }
+              },
+            }
+          },
         },
       ],
       // magpie's hook: how much of the plan is used. A refusal here never
