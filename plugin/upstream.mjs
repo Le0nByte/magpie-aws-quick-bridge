@@ -16,7 +16,7 @@ const HANDSHAKE_MS = 20_000
 // A proxy that answers nothing can leave the dial hanging for minutes, all of
 // it before a single byte is sent. Past this the dial counts as a transport
 // failure the caller may retry.
-const DIAL_MS = 20_000
+const DIAL_MS = 15_000
 const PING_MS = 25_000
 
 const TERMINAL = new Set(["turn_completed", "turn_aborted", "turn_ended", "stream_ended", "chat_complete"])

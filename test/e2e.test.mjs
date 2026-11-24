@@ -12,6 +12,12 @@ let auth
 const saved = []
 
 beforeAll(async () => {
+  // the refusal backoff lives under the bridge's home, which would otherwise be
+  // the user's own directory: one test's "revoked" token would outlive the run
+  const { mkdtempSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const { join } = await import("node:path")
+  process.env.AWS_QUICK_BRIDGE_HOME = mkdtempSync(join(tmpdir(), "aws-quick-test-"))
   mock = startMock()
   const client = { auth: { set: async ({ body }) => void saved.push(body) } }
   hooks = await plugin.server(

@@ -13,7 +13,12 @@ import { UpstreamError, chat, frameBytes, sessionFromAuth, userMessage } from ".
 // proxy stalling for a moment should not turn the whole turn into a 502.
 const DIAL_ATTEMPTS = 3
 const DIAL_BACKOFF_MS = 1_500
-const dialFailed = (e) => e instanceof UpstreamError && e.kind === "handshake" && !e.status
+// Nothing is sent before the socket opens, so a dial that reached no HTTP
+// status - refused, or hung until the dial budget ran out - is safe to try
+// again. A timeout that already had the socket open is not.
+const dialFailed = (e) =>
+  e instanceof UpstreamError &&
+  ((e.kind === "handshake" && !e.status) || (e.kind === "timeout" && /handshake/i.test(e.message)))
 const sleepFor = (ms, signal) =>
   new Promise((resolve, reject) => {
     const timer = setTimeout(resolve, ms)
@@ -96,7 +101,9 @@ export function failureResponse(error, spent = null) {
     })
   if (error.kind === "handshake" && error.status === 403) return errorResponse(403, "upstream_forbidden", error.message)
   if (error.kind === "handshake" && error.status === 429) return errorResponse(429, "rate_limit_exceeded", error.message)
-  if (error.kind === "timeout") return errorResponse(504, "upstream_timeout", error.message)
+  // a dial that ran out of its budget is a timeout too, not a gateway fault
+  if (error.kind === "timeout" || (error.kind === "handshake" && /timed out/i.test(error.message)))
+    return errorResponse(504, "upstream_timeout", error.message)
   if (error.kind === "too_large")
     return errorResponse(400, "context_length_exceeded", `the request does not fit Amazon Quick's 64 KB message limit (${error.message})`)
   if (error.kind === "blocked") return errorResponse(400, "content_filter", error.message)
