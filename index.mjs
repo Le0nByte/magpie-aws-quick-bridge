@@ -5,6 +5,7 @@
 import { MODES, chatCompletions, compose, errorResponse, failureResponse, mapModel, prepare, thinkingEffort, usageBody } from "./plugin/chat.mjs"
 import { browserSignIn } from "./plugin/login.mjs"
 import * as signin from "./plugin/signin.mjs"
+import * as refusedStore from "./plugin/refused.mjs"
 import * as messages from "./plugin/messages.mjs"
 import * as oauth from "./plugin/oauth.mjs"
 import * as qbs from "./plugin/qbs.mjs"
@@ -24,7 +25,6 @@ const REFRESH_LEAD_MS = 10 * 60_000
 // 续期被上游拒绝（refresh token 被吊销/过期）后，magpie 会一直叫 auth.refresh：
 // 实测每 ~10 秒一次、一天上千次。这里记住被拒的 refresh token，30 分钟内不再打网络。
 const REFUSED_BACKOFF_MS = 30 * 60_000
-const refusedRefresh = new Map()
 const USAGE_TTL_MS = 60_000
 const USAGE_BUDGET_MS = 2_500
 const MODELS_BUDGET_MS = 4_000
@@ -208,7 +208,8 @@ const server = async (input, options) => {
       async refresh(auth) {
         if (auth?.type !== "oauth") return
         const token = String(auth.refresh ?? "")
-        const hit = refusedRefresh.get(token)
+        // 落盘记录：宿主是按次拉起的，内存里的 Map 记不住上一次
+        const hit = refusedStore.get(token)
         if (hit && Date.now() - hit.at < REFUSED_BACKOFF_MS) {
           // 已经确认被吊销：静默跳过（返回 undefined 是「这次不续期」的合法写法），
           // 不打网络、也不让 magpie 每 10 秒写一条同样的错误日志。
@@ -218,10 +219,7 @@ const server = async (input, options) => {
         try {
           return await oauth.refresh(auth)
         } catch (e) {
-          if (e?.signIn === "expired") {
-            refusedRefresh.set(token, { at: Date.now(), error: String(e?.message ?? e) })
-            if (refusedRefresh.size > 8) refusedRefresh.delete(refusedRefresh.keys().next().value)
-          }
+          if (e?.signIn === "expired") refusedStore.set(token, String(e?.message ?? e))
           throw e
         }
       },
