@@ -210,7 +210,10 @@ const server = async (input, options) => {
         const token = String(auth.refresh ?? "")
         const hit = refusedRefresh.get(token)
         if (hit && Date.now() - hit.at < REFUSED_BACKOFF_MS) {
-          throw Object.assign(new Error(hit.error), { signIn: "expired" })
+          // 已经确认被吊销：静默跳过（返回 undefined 是「这次不续期」的合法写法），
+          // 不打网络、也不让 magpie 每 10 秒写一条同样的错误日志。
+          // 真正需要重新登录这件事，会在 usage / 聊天请求上如实报出来。
+          return
         }
         try {
           return await oauth.refresh(auth)
