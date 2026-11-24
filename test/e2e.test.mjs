@@ -195,6 +195,31 @@ describe("chat", () => {
     }
   })
 
+  test("a reply stopped by the content filter is content_filter, not a gateway fault", async () => {
+    mock.state.script = () => [{ type: "error", payload: { message: "The model's content filter stopped this reply. Rephrase, or start a new chat." } }]
+    let res = await post({ model: "smart", messages: [{ role: "user", content: "ping" }] })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe("content_filter")
+
+    // the same words arriving as the whole reply are not a summary either
+    mock.state.script = () => [
+      { type: "text_delta", payload: "That content did not pass our automated check. Try asking again - a small rephrase usually helps." },
+      { type: "turn_completed", payload: {} },
+    ]
+    res = await post({ model: "smart", messages: [{ role: "user", content: "ping" }] })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe("content_filter")
+
+    // a normal reply that merely mentions the words is left alone
+    mock.state.script = () => [
+      { type: "text_delta", payload: "The content filter discussion you asked about is documented below." },
+      { type: "turn_completed", payload: {} },
+    ]
+    res = await post({ model: "smart", messages: [{ role: "user", content: "ping" }] })
+    expect(res.status).toBe(200)
+    Object.assign(mock.state, { script: null })
+  })
+
   test("tool_choice none turns the bridge off", async () => {
     const body = await (await post({ model: "smart", tools, tool_choice: "none", messages: [{ role: "user", content: "Please use the tool get_weather" }] })).json()
     expect(body.choices[0].message).toEqual({ role: "assistant", content: "pong from smart" })

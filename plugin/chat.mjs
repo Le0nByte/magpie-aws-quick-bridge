@@ -74,6 +74,17 @@ export function errorResponse(status, code, message, headers = {}) {
 
 const THROTTLED = /thrott|rate.?limit|too many requests|quota|limit exceeded|capacity/i
 
+// Amazon Quick stops a reply it will not make, and says so in words: sometimes
+// as an error event, sometimes as the whole reply. Neither is the gateway's
+// fault - reporting the first as 502 hid the cause, and passing the second on
+// let a compaction keep a refusal where it expected a summary.
+const FILTERED = /content filter|automated check|content polic|guardrail/i
+const REFUSAL = /^(?:that content did not pass our automated check|the model['\u2019]s content filter stopped this reply)\b/i
+const refusalText = (value) => {
+  const said = String(value ?? "").trim()
+  return said.length > 0 && said.length <= 400 && REFUSAL.test(said) ? said : ""
+}
+
 // magpie rests an account for a 429's Retry-After. An allowance that is
 // away for longer is asked about again after this long, in case the plan
 // changed meanwhile.
@@ -108,6 +119,9 @@ export function failureResponse(error, spent = null) {
     return errorResponse(400, "context_length_exceeded", `the request does not fit Amazon Quick's 64 KB message limit (${error.message})`)
   if (error.kind === "blocked") return errorResponse(400, "content_filter", error.message)
   if (error.kind === "upstream" && THROTTLED.test(error.message)) return errorResponse(429, "rate_limit_exceeded", error.message)
+  // the reply was stopped by Amazon Quick's own filter: retrying it changes
+  // nothing, and 502 read as a broken gateway
+  if (error.kind === "blocked" || FILTERED.test(error.message)) return errorResponse(400, "content_filter", error.message)
   return errorResponse(502, "upstream_error", error.message)
 }
 
@@ -280,6 +294,8 @@ async function complete(turn, run) {
     if (!turn.parallel) calls = calls.slice(0, 1)
   }
   if (!text.trim() && !calls.length) return errorResponse(502, "upstream_error", "upstream returned no text or tool calls")
+  const stopped = refusalText(text)
+  if (!calls.length && stopped) return errorResponse(400, "content_filter", stopped)
   const message = { role: "assistant", content: text.trim() ? text : null }
   if (reasoning) message.reasoning_content = reasoning
   if (calls.length) message.tool_calls = calls.map((c) => wireToolCall(c))
@@ -332,8 +348,10 @@ function stream(turn, run, abort) {
   }
 
   let sawText = false
+  let whole = ""
   const text = (t) => {
     sawText = true
+    whole += t
     chunk({ content: t })
   }
   const bridge = turn.bridge ? new BridgeStream(turn.bridgeAllowed, text) : null
@@ -349,6 +367,8 @@ function stream(turn, run, abort) {
       let calls = bridge ? bridge.finish() : []
       if (!turn.parallel) calls = calls.slice(0, 1)
       if (!sawText && !calls.length) throw new UpstreamError("upstream", "upstream returned no text or tool calls")
+      const stopped = refusalText(whole)
+      if (stopped && !calls.length) throw new UpstreamError("blocked", stopped)
       calls.forEach((c, i) => chunk({ tool_calls: [wireToolCall(c, i)] }))
       chunk({}, calls.length ? "tool_calls" : "stop")
       if (turn.includeUsage) {
