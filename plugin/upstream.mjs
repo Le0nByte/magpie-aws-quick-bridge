@@ -13,6 +13,10 @@ const DEFAULT_WS_PATH = "/streaming/quickwork-chat-bidirectional-stream"
 const READ_IDLE_MS = 2 * 60_000
 const AFTER_COMPLETE_MS = 5_000
 const HANDSHAKE_MS = 20_000
+// A proxy that answers nothing can leave the dial hanging for minutes, all of
+// it before a single byte is sent. Past this the dial counts as a transport
+// failure the caller may retry.
+const DIAL_MS = 20_000
 const PING_MS = 25_000
 
 const TERMINAL = new Set(["turn_completed", "turn_aborted", "turn_ended", "stream_ended", "chat_complete"])
@@ -192,6 +196,7 @@ export function chat({ session, cfg, input, signal, onEvent }) {
     let completeTimer = null
     let pingTimer = null
     let handshakeTimer = null
+    let dialTimer = null
     let requestTimer = null
 
     const options = { headers }
@@ -208,7 +213,7 @@ export function chat({ session, cfg, input, signal, onEvent }) {
     const send = (value) => ws.send(encodeFrame(gateway, value))
 
     const cleanup = () => {
-      for (const t of [idleTimer, completeTimer, handshakeTimer, requestTimer]) clearTimeout(t)
+      for (const t of [idleTimer, completeTimer, handshakeTimer, requestTimer, dialTimer]) clearTimeout(t)
       clearInterval(pingTimer)
       signal?.removeEventListener("abort", onAbort)
       try {
@@ -412,6 +417,7 @@ export function chat({ session, cfg, input, signal, onEvent }) {
     ws.onopen = () => {
       opened = true
       clearTimeout(handshakeTimer)
+      clearTimeout(dialTimer)
       try {
         // The AIDP and Gateway paths use different session_connect shapes.
         if (gateway) send({ type: "session_connect", session_id: session.outpostId })
@@ -493,6 +499,9 @@ export function chat({ session, cfg, input, signal, onEvent }) {
     }
 
     handshakeTimer = setTimeout(() => fail(new UpstreamError("timeout", "upstream WebSocket handshake timed out")), HANDSHAKE_MS)
+    dialTimer = setTimeout(() => {
+      if (!opened) fail(new UpstreamError("handshake", "upstream WebSocket dial timed out", 0))
+    }, DIAL_MS)
     requestTimer = setTimeout(() => fail(new UpstreamError("timeout", "the upstream request timed out")), cfg.requestTimeoutMs)
   })
 }

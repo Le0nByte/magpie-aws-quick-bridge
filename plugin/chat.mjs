@@ -8,6 +8,17 @@ import * as qbs from "./qbs.mjs"
 import { ThreadStore, digest, messageKey } from "./threads.mjs"
 import { BridgeStream, TOOL_DETAILS, TOOL_REMINDER, buildToolBridgePrompt, parseClientToolCalls, parseToolChoice, requestedToolNames } from "./toolbridge.mjs"
 import { UpstreamError, chat, frameBytes, sessionFromAuth, userMessage } from "./upstream.mjs"
+
+// A dial that never opened took nothing with it, so it is tried again: a
+// proxy stalling for a moment should not turn the whole turn into a 502.
+const DIAL_ATTEMPTS = 3
+const DIAL_BACKOFF_MS = 1_500
+const dialFailed = (e) => e instanceof UpstreamError && e.kind === "handshake" && !e.status
+const sleepFor = (ms, signal) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason ?? new Error("aborted")) }, { once: true })
+  })
 import { isGatewayProvider } from "./wire.mjs"
 
 // "advanced" is listed only for accounts that have it (provider.models).
@@ -385,15 +396,25 @@ export async function chatCompletions({ body, auth, cfg, signal, conversation = 
       threads.drop(thread)
       throw e
     }
+    const send = async (input, onEvent) => {
+      for (let i = 0; ; i++) {
+        try {
+          return await chat({ session, cfg, input, signal: abort.signal, onEvent })
+        } catch (e) {
+          if (!dialFailed(e) || i >= DIAL_ATTEMPTS - 1 || abort.signal?.aborted) throw e
+          await sleepFor(DIAL_BACKOFF_MS * (i + 1), abort.signal)
+        }
+      }
+    }
     const run = async (onEvent) => {
       try {
-        const res = await chat({ session, cfg, input: composed.input, signal: abort.signal, onEvent }).catch(async (e) => {
+        const res = await send(composed.input, onEvent).catch(async (e) => {
           // refused as too large although it was measured to fit: nothing
           // was taken, so it is sent once more, made smaller
           if (!(e instanceof UpstreamError) || e.kind !== "too_large" || !cfg.maxFrameBytes) throw e
           const smaller = { ...cfg, maxFrameBytes: Math.floor(cfg.maxFrameBytes * 0.7) }
           composed = await compose(turn, { auth, cfg: smaller, session, thread, threadId, signal: abort.signal })
-          return chat({ session, cfg, input: composed.input, signal: abort.signal, onEvent })
+          return send(composed.input, onEvent)
         })
         if (cfg.stateful) threads.commit({ id: threadId, account, session: conversation, custom: composed.custom }, keys)
         settle()
