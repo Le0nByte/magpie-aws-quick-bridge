@@ -21,6 +21,10 @@ const BASE = "https://aws-quick.invalid/v1"
 const KEEP_SESSIONS = "keep_sessions"
 const REFRESH_LEAD_MS = 10 * 60_000
 // 额度的读法：magpie 等钩子有上限，读得慢就回上次的数字（见 plugin/usage-cache.mjs）
+// 续期被上游拒绝（refresh token 被吊销/过期）后，magpie 会一直叫 auth.refresh：
+// 实测每 ~10 秒一次、一天上千次。这里记住被拒的 refresh token，30 分钟内不再打网络。
+const REFUSED_BACKOFF_MS = 30 * 60_000
+const refusedRefresh = new Map()
 const USAGE_TTL_MS = 60_000
 const USAGE_BUDGET_MS = 2_500
 const MODELS_BUDGET_MS = 4_000
@@ -203,7 +207,20 @@ const server = async (input, options) => {
       // magpie's hook: renews the account's tokens before they expire
       async refresh(auth) {
         if (auth?.type !== "oauth") return
-        return oauth.refresh(auth)
+        const token = String(auth.refresh ?? "")
+        const hit = refusedRefresh.get(token)
+        if (hit && Date.now() - hit.at < REFUSED_BACKOFF_MS) {
+          throw Object.assign(new Error(hit.error), { signIn: "expired" })
+        }
+        try {
+          return await oauth.refresh(auth)
+        } catch (e) {
+          if (e?.signIn === "expired") {
+            refusedRefresh.set(token, { at: Date.now(), error: String(e?.message ?? e) })
+            if (refusedRefresh.size > 8) refusedRefresh.delete(refusedRefresh.keys().next().value)
+          }
+          throw e
+        }
       },
       async loader(getAuth) {
         return {

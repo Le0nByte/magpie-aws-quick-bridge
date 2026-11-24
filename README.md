@@ -145,7 +145,13 @@ Magpie 读额度时等插件宿主有上限，而上游 `profile/usage` 偶尔�
 
 指向自定义端点（`oidc_base` / `discovery_url` / `data_plane_url`，测试 mock 或自建网关）时仍走宿主内登录，`AWS_QUICK_SIGNIN_INPROCESS=1` 可强制。
 
-版本：`0.3.9`。
+**5. 续期被拒后不再每 10 秒硬怼**
+
+refresh token 被上游吊销（网页端退出登录、撤销会话、长期未用）后，magpie 仍会不断调 `auth.refresh`：实测每 ~10 秒一次、一晚上写了 1300+ 条同样的错误日志。现在被拒的 refresh token 会进 30 分钟退避，期间直接抛同样错误、不打网络。
+
+版本：`0.3.10`。
+
+
 
 
 
