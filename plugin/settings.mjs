@@ -30,6 +30,9 @@ export function settings(options = {}) {
     locale: text(options.locale, "en-US"),
     thinkingEffort: ["off", "low", "medium", "high", "max"].includes(effort) ? effort : "",
     keepSessions: options.keep_sessions === true,
+  // a dial that never opened is retried without the proxy: Amazon Quick's
+  // hosts answer directly from here, so a proxy outage does not end the turn
+  directFallback: options.direct_fallback !== false,
     webSearch: options.web_search === true,
     // false: every request starts a new thread and sends the whole conversation
     stateful: options.stateful !== false,

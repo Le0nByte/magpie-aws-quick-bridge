@@ -405,8 +405,14 @@ export async function chatCompletions({ body, auth, cfg, signal, conversation = 
     }
     const send = async (input, onEvent) => {
       for (let i = 0; ; i++) {
+        // The first attempt goes through the proxy as configured. A dial that
+        // never opened is retried, and the retries go direct: Amazon Quick's
+        // hosts answer from this machine without a proxy, so a proxy that is
+        // down or stuck no longer takes the turn with it. With no proxy set
+        // the retries are the same attempt again.
+        const attempt = i === 0 ? cfg : { ...cfg, proxy: cfg.directFallback === false ? cfg.proxy : "" }
         try {
-          return await chat({ session, cfg, input, signal: abort.signal, onEvent })
+          return await chat({ session, cfg: attempt, input, signal: abort.signal, onEvent })
         } catch (e) {
           if (!dialFailed(e) || i >= DIAL_ATTEMPTS - 1 || abort.signal?.aborted) throw e
           await sleepFor(DIAL_BACKOFF_MS * (i + 1), abort.signal)
